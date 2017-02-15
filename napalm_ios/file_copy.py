@@ -32,7 +32,7 @@ class FileCopy(BaseFileCopy):
         else:
             self.file_system = file_system
 
-        self._netmiko_scp_obj = FileTransfer(self.napalm_conn,
+        self._netmiko_scp_obj = FileTransfer(self.napalm_conn.device,
                                              source_file=self.source_file,
                                              dest_file=self.dest_file,
                                              file_system=self.file_system,
@@ -54,6 +54,7 @@ class FileCopy(BaseFileCopy):
         self._netmiko_scp_obj.get_file()
 
     def put_file(self):
+        print("HELLO")
         self._netmiko_scp_obj.put_file()
 
     def _remote_md5(self):
