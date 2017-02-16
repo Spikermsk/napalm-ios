@@ -51,41 +51,31 @@ class FileCopy(BaseFileCopy):
     def _disconnect(self):
         self._netmiko_scp_obj.close_scp_chan()
 
-    def get_file(self):
-        if self.direction != 'get':
-            msg = "Attempting get_file, but direction not set to get."
-            raise FileTransferException(msg)
-        self._netmiko_scp_obj.get_file()
-
     def _verify_space_and_transfer(self):
         """Verify sufficient space available and transfer file."""
         if not self._verify_space_available():
             msg = "Insufficent space available on device."
             raise FileTransferException(msg)
-        self._transfer_file(self)
+        self._execute_transfer(self)
 
-    def _transfer_file(self):
+    def _execute_transfer(self):
         """SCP transfer file."""
         if self.direction == 'put':
             self._netmiko_scp_obj.put_file()
         elif self.direction == 'get':
             self._netmiko_scp_obj.get_file()
 
-    def put_file(self):
-        """
-        Transfer file from control machine to remote network device.
-    
-        Raises FileTransferException on failure.
-        """
-        if self.direction != 'put':
-            msg = "Attempting put_file, but direction not set to put."
+    def _transfer_wrapper(self, direction):
+        """Wrapper function that handles both put and get file transfers."""
+        if self.direction != direction:
+            msg = "Attempting {}, but self.direction not set to {}".format(direction, direction)
             raise FileTransferException(msg)
 
         if not self._check_file_exists():
             self._verify_space_and_transfer()
         else:
             # File already exists, check current MD5
-            if self._remote_md5() != self._local_md5():
+            if self._compare_md5():
                 self._verify_space_and_transfer()
             else:
                 # File already matches
@@ -97,6 +87,22 @@ class FileCopy(BaseFileCopy):
             raise FileTransferException(msg)
 
         return None
+
+    def get_file(self):
+        """
+        Transfer file from control machine to remote network device.
+    
+        Raises FileTransferException on failure.
+        """
+        return self._transfer_wrapper(direction='get')
+
+    def put_file(self):
+        """
+        Transfer file from control machine to remote network device.
+    
+        Raises FileTransferException on failure.
+        """
+        return self._transfer_wrapper(direction='put')
 
     def _remote_md5(self):
         return self._netmiko_scp_obj.remote_md5()
@@ -114,10 +120,23 @@ class FileCopy(BaseFileCopy):
         return self._netmiko_scp_obj.local_space_available()
 
     def _verify_space_available(self):
-        """Return boolean indicating whether sufficient space available for file."""
+        """
+        Check whether sufficient space available for file.
+
+        Automatically checks direction of file transfer.
+
+        Returns boolean.
+        """
         return self._netmiko_scp_obj.verify_space_available()
 
     def _check_file_exists(self):
+        """
+        Check whether file already exists.
+
+        Automatically checks direction of file transfer.
+
+        Returns boolean.
+        """
         return self._netmiko_scp_obj.check_file_exists()
 
     def _remote_file_size(self):
