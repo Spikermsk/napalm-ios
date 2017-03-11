@@ -3,14 +3,18 @@ from __future__ import print_function
 from __future__ import unicode_literals
 
 from builtins import super
+from getpass import getpass
+from pprint import pprint
 
 import pytest
 from napalm_base.test import conftest as parent_conftest
 
 from napalm_base.test.double import BaseTestDouble
 from napalm_base.utils import py23_compat
+from napalm_base import get_network_driver
 
 from napalm_ios import ios
+from napalm_ios import FileCopy
 
 
 @pytest.fixture(scope='class')
@@ -99,6 +103,37 @@ def scp_fixture_get(request):
     return (ssh_conn, scp_transfer)
 
 
+def delete_file_ios(ssh_conn, dest_file_system, dest_file):
+    """Delete a remote file for a Cisco IOS device."""
+    debug = False
+
+    if not dest_file_system:
+        raise ValueError("Invalid file system specified")
+    if not dest_file:
+        raise ValueError("Invalid dest file specified")
+
+    # Check if the dest_file already exists
+    full_file_name = "{0}/{1}".format(dest_file_system, dest_file)
+
+    cmd = "delete {0}".format(full_file_name)
+    output = ssh_conn.send_command_timing(cmd)
+    if debug:
+        print(output)
+    if 'Delete' in output and dest_file in output:
+        output += ssh_conn.send_command_timing("\n")
+        if debug:
+            print(output)
+        if 'Delete' in output and full_file_name in output and 'confirm' in output:
+            if debug:
+                print("Deleting file.")
+            output += ssh_conn.send_command_timing("y")
+            return output
+        else:
+            output += ssh_conn.send_command_timing("n")
+
+    raise ValueError("An error happened deleting file on Cisco IOS")
+
+
 @pytest.fixture(scope='module')
 def scp_fixture(request):
     """
@@ -119,8 +154,6 @@ def scp_fixture(request):
     print()
     print(">>>Test device open")
     device.open()
-
-    pp(device.get_facts())
    
     # ADJUST TO TRANSFER IMAGE FILE
     dest_file_system = 'flash:'
@@ -132,12 +165,13 @@ def scp_fixture(request):
     scp_transfer = FileCopy(device, source_file=source_file, dest_file=dest_file,
                             file_system=dest_file_system, direction=direction)
     scp_transfer._connect()
-    ssh_conn = ConnectHandler(**device)
+    # Netmiko connection
+    ssh_conn = device.device
 
     # Delete the test transfer files
-    #if scp_transfer.check_file_exists():
-    #    delete_file_ios(ssh_conn, dest_file_system, dest_file)
+    if scp_transfer._check_file_exists():
+        delete_file_ios(ssh_conn, dest_file_system, dest_file)
     #if os.path.exists(local_file):
     #    os.remove(local_file)
 
-    return (ssh_conn, scp_transfer)
+    return (device, scp_transfer)
