@@ -74,30 +74,32 @@ def test_disconnect(scp_fixture):
     ssh_conn.close()
 
 
-#def test_scp_get(scp_fixture_get):
-#    ssh_conn, scp_transfer = scp_fixture_get
-#    debug = False
-#
-#    if scp_transfer.check_file_exists():
-#        if debug:
-#            print("File already exists")
-#        # File should not already exist
-#        assert False
-#    else:
-#        scp_transfer.get_file()
-#        if scp_transfer.check_file_exists():
-#            assert True == True
-#        else:
-#            assert False == True
-#
-#def test_md5_methods_get(scp_fixture_get):
-#    ssh_conn, scp_transfer = scp_fixture_get
-#    md5_value = 'd8df36973ff832b564ad84642d07a261'
-#    local_md5 = scp_transfer.file_md5("test9.txt")
-#    assert local_md5 == md5_value
-#    assert scp_transfer.compare_md5() == True
-#
-#def test_disconnect_get(scp_fixture_get):
-#    """Terminate the SSH session."""
-#    ssh_conn, scp_transfer = scp_fixture_get
-#    ssh_conn.disconnect()
+# Operations using SCP put fixture
+def test_scp_get(scp_fixture_get):
+    ssh_conn, scp_transfer = scp_fixture_get
+    debug = False
+
+    if scp_transfer._check_file_exists():
+        if debug:
+            print("File already exists")
+        # File should not already exist
+        assert False
+    else:
+        scp_transfer.get_file()
+        if scp_transfer._check_file_exists():
+            assert True
+        else:
+            assert False
+
+def test_md5_methods_get(scp_fixture_get):
+    ssh_conn, scp_transfer = scp_fixture_get
+    md5_value = 'd8d77109f4a24efc3bd53d7cabb7ee35'
+    local_md5 = scp_transfer._local_md5()
+    assert local_md5 == md5_value
+    assert scp_transfer._compare_md5() == True
+
+def test_disconnect_get(scp_fixture_get):
+    """Terminate the SSH session."""
+    ssh_conn, scp_transfer = scp_fixture_get
+    scp_transfer._disconnect()
+    ssh_conn.close()

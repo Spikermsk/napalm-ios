@@ -5,6 +5,7 @@ from __future__ import unicode_literals
 from builtins import super
 from getpass import getpass
 from pprint import pprint
+import os
 
 import pytest
 from napalm_base.test import conftest as parent_conftest
@@ -141,7 +142,6 @@ def scp_fixture(request):
 
     Return a tuple (ssh_conn, scp_handle)
     """
-
     ip_addr = '184.105.247.70'
     username = 'pyclass'
     optional_args = {}
@@ -175,3 +175,43 @@ def scp_fixture(request):
     #    os.remove(local_file)
 
     return (device, scp_transfer)
+
+
+@pytest.fixture(scope='module')
+def scp_fixture_get(request):
+    """ 
+    Create an FileTransfer object (direction=get)
+
+    Return a tuple (ssh_conn, scp_handle)
+    """
+    ip_addr = '184.105.247.70'
+    username = 'pyclass'
+    optional_args = {}
+    optional_args['port'] = 22
+    password = getpass()
+
+    driver = get_network_driver('ios')
+    device = driver(ip_addr, username, password, optional_args=optional_args)
+
+    print()
+    print(">>>Test device open")
+    device.open()
+
+    dest_file_system = 'flash:'
+    source_file = 'test9.txt'
+    local_file = 'testx.txt'
+    dest_file = local_file
+    direction = 'get'
+
+    scp_transfer = FileCopy(device, source_file=source_file, dest_file=dest_file,
+                            file_system=dest_file_system, direction=direction)
+    scp_transfer._connect()
+    # Netmiko connection
+    ssh_conn = device.device
+
+    # Delete the test transfer files
+    if os.path.exists(local_file):
+        os.remove(local_file)
+
+    return (device, scp_transfer)
+
