@@ -47,12 +47,14 @@ IPV6_ADDR_REGEX_3 = r"[0-9a-fA-F]{1,3}:[0-9a-fA-F]{1,3}:[0-9a-fA-F]{1,3}:[0-9a-f
                      "[0-9a-fA-F]{1,3}:[0-9a-fA-F]{1,3}:[0-9a-fA-F]{1,3}:[0-9a-fA-F]{1,3}"
 # Should validate IPv6 address using an IP address library after matching with this regex
 IPV6_ADDR_REGEX = "(?:{}|{}|{})".format(IPV6_ADDR_REGEX_1, IPV6_ADDR_REGEX_2, IPV6_ADDR_REGEX_3)
+# IPv4 or IPv6 address with trailing newline
+RE_IPADDR_STRIP = r"({}|{})\n".format(IPV4_ADDR_REGEX, IPV6_ADDR_REGEX)
+RE_IPADDR = re.compile(r"{}".format(IP_ADDR_REGEX))
+
 MAC_REGEX = r"[a-fA-F0-9]{4}\.[a-fA-F0-9]{4}\.[a-fA-F0-9]{4}"
 VLAN_REGEX = r"\d{1,4}"
 # Period needed for 32-bit AS Numbers
 ASN_REGEX = r"[\d\.]+"
-RE_IPADDR = re.compile(r"{}".format(IP_ADDR_REGEX))
-RE_IPADDR_STRIP = re.compile(r"({})\n".format(IP_ADDR_REGEX))
 RE_MAC = re.compile(r"{}".format(MAC_REGEX))
 
 IOS_COMMANDS = {
@@ -1218,23 +1220,13 @@ class IOSDriver(NetworkDriver):
             else:
                 raise ValueError("Unexpected data in BGP summary: {}".format(bgp_summary_section))
 
-        # Normalize data (i.e. get rid of wrapping output across multiple lines)
-        # Neighbor        V           AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
-        # 2001:DB8::4
-        #                 4        65004 9900690  612449 155362939    0    0 26w6d       36391
+        # Only get the relevant part of the BGP table
         neighbor_table = re.split(r"^Neighbor\s+.*State.PfxRcd", bgp_summary_ipv6, flags=re.M)[-1]
-        # Search for occurrences of IP Addr and only whitespace on a line
-        normalize_pattern = r"((?:{}|{})\s*\n.*)".format(IPV4_ADDR_REGEX, IPV6_ADDR_REGEX)
-        non_std_lines = re.findall(normalize_pattern, neighbor_table)
-        # Get rid of the extra newline
-        non_std_lines = [bgp_entry.replace("\n", "") for bgp_entry in non_std_lines]
 
-        # Nornal lines (i.e. no newline after IP)
-        std_pattern = r"^((?:{}|{})[^\n]\s+\d.*)$".format(IPV4_ADDR_REGEX, IPV6_ADDR_REGEX)
-        std_lines = re.findall(std_pattern, neighbor_table, flags=re.M)
+        # Cisco issue where new lines are inserted after neighbor IP
+        neighbor_table = re.sub(RE_IPADDR_STRIP, r"\1", neighbor_table)
 
-        # Reconstruct normalized neighbor table
-        neighbor_table = std_lines + non_std_lines
+
         bgp_neighbor_pattern = re.compile(r'^\*?(?P<remote_addr>({})|({}))'
                                           r'\s+\d+\s+(?P<remote_as>{})(\s+\S+){{5}}\s+'
                                           r'(?P<uptime>(never)|\d+\S+)'
@@ -1242,7 +1234,7 @@ class IOSDriver(NetworkDriver):
                                              IPV4_ADDR_REGEX, IPV6_ADDR_REGEX, ASN_REGEX))
 
         bgp_neighbors = []
-        for entry in neighbor_table:
+        for entry in neighbor_table.splitlines():
             match = re.search(bgp_neighbor_pattern, entry)
             if match:
                 bgp_neighbors.append(match.groupdict())
@@ -1256,7 +1248,32 @@ class IOSDriver(NetworkDriver):
         bgp_neighbor_data['global']['router_id'] = router_id
         bgp_neighbor_data['global']['peers'] = {}
         for bgp_peer in bgp_neighbors:
+            print(bgp_peer)
 
+            # check that remote_addr looks sane
+            remote_addr = _ip_valid(bgp_peer['remote_addr'])
+
+            # FIX
+            # afi = entry['afi'].lower()
+
+            # get neighbor_entry out of neighbor data
+            neighbor_entry = None
+            for neighbor in neighbor_data:
+                if (neighbor['afi'].lower() == afi) and \
+                        (ip(neighbor['remote_addr']) == remote_addr):
+                    neighbor_entry = neighbor
+                    break
+            if not isinstance(neighbor_entry, dict):
+                raise ValueError(msg="Couldn't find neighbor data for %s in afi %s" %
+                                     (remote_addr, afi))
+            # check for admin down state
+            try:
+                if "(Admin)" in entry['state']:
+                    is_enabled = False
+                else:
+                    is_enabled = True
+            except KeyError:
+                  is_enabled = True
 
         return bgp_neighbor_data
 # """
