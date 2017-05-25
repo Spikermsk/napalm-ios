@@ -41,7 +41,12 @@ YEAR_SECONDS = 365 * DAY_SECONDS
 # STD REGEX PATTERNS
 IP_ADDR_REGEX = r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}"
 IPV4_ADDR_REGEX = IP_ADDR_REGEX
-IPV6_ADDR_REGEX = r"[0-9a-fA-F:]{2,39}"
+IPV6_ADDR_REGEX_1 = r"::"
+IPV6_ADDR_REGEX_2 = r"[0-9a-fA-F:]{1,39}::[0-9a-fA-F:]{1,39}"
+IPV6_ADDR_REGEX_3 = r"[0-9a-fA-F]{1,3}:[0-9a-fA-F]{1,3}:[0-9a-fA-F]{1,3}:[0-9a-fA-F]{1,3}:" \
+                     "[0-9a-fA-F]{1,3}:[0-9a-fA-F]{1,3}:[0-9a-fA-F]{1,3}:[0-9a-fA-F]{1,3}"
+# Should validate IPv6 address using an IP address library after matching with this regex
+IPV6_ADDR_REGEX = "(?:{}|{}|{})".format(IPV6_ADDR_REGEX_1, IPV6_ADDR_REGEX_2, IPV6_ADDR_REGEX_3)
 MAC_REGEX = r"[a-fA-F0-9]{4}\.[a-fA-F0-9]{4}\.[a-fA-F0-9]{4}"
 VLAN_REGEX = r"\d{1,4}"
 # Period needed for 32-bit AS Numbers
@@ -1185,7 +1190,7 @@ class IOSDriver(NetworkDriver):
 
         # get summary output from device
         cmd_bgp_all_sum = 'show bgp all summary'
-        summary_output = self._send_command(cmd_bgp_all_sum).strip()
+        bgp_summary = self._send_command(cmd_bgp_all_sum).strip()
 
         # get neighbor output from device
         neighbor_output = ''
@@ -1195,262 +1200,95 @@ class IOSDriver(NetworkDriver):
             # trailing newline required for parsing
             neighbor_output += "\n"
 
-        # compile regexps
-        parse_summary = {
-            'patterns': [
-                # For address family: IPv4 Unicast
-                {'regexp': re.compile(r'^For address family: (?P<afi>\S+) (?P<safi>\S+)'),
-                 'record': False},
-                # Capture router_id and local_as values, e.g.:
-                # BGP router identifier 10.0.1.1, local AS number 65000
-                {'regexp': re.compile(r'^.* router identifier (?P<router_id>{}), '
-                                      r'local AS number (?P<local_as>{})'.format(
-                                            IPV4_ADDR_REGEX, ASN_REGEX
-                                      )),
-                 'record': False},
-                # Match neighbor summary row, capturing useful details and
-                # discarding the 5 columns that we don't care about, e.g.:
-                # Neighbor   V          AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
-                # 10.0.0.2   4       65000 1336020 64337701 1011343614    0    0 8w0d         3143
-                {'regexp': re.compile(r'^\*?(?P<remote_addr>({})|({}))'
-                                      r'\s+\d+\s+(?P<remote_as>{})(\s+\S+){{5}}\s+'
-                                      r'(?P<uptime>(never)|\d+\S+)'
-                                      r'\s+(?P<accepted_prefixes>\d+)'.format(
-                                            IPV4_ADDR_REGEX, IPV6_ADDR_REGEX, ASN_REGEX
-                                      )),
-                 'record': True},
-                # Same as above, but for peers that are not Established, e.g.:
-                # Neighbor     V       AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
-                # 192.168.0.2  4    65002       0       0        1    0    0 never    Active
-                {'regexp': re.compile(r'^\*?(?P<remote_addr>({})|({}))'
-                                      r'\s+\d+\s+(?P<remote_as>{})(\s+\S+){{5}}\s+'
-                                      r'(?P<uptime>(never)|\d+\S+)\s+(?P<state>\D.*)'.format(
-                                            IPV4_ADDR_REGEX, IPV6_ADDR_REGEX, ASN_REGEX
-                                      )),
-                 'record': True},
-                # ipv6 peers often break accross rows because of the longer peer address,
-                # match as above, but in separate expressions, e.g.:
-                # Neighbor      V     AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
-                # 2001:DB8::4
-                #               4  65004 9900690  612449 155362939    0    0 26w6d       36391
-                {'regexp': re.compile(r'^\*?(?P<remote_addr>({})|({}))'.format(
-                                            IPV4_ADDR_REGEX, IPV6_ADDR_REGEX
-                                     )),
-                 'record': False},
-                {'regexp': re.compile(r'^\s+\d+\s+(?P<remote_as>{})(\s+\S+){{5}}\s+'
-                                      r'(?P<uptime>(never)|\d+\S+)'
-                                      r'\s+(?P<accepted_prefixes>\d+)'.format(
-                                            ASN_REGEX
-                                      )),
-                 'record': True},
-                # Same as above, but for peers that are not Established, e.g.:
-                # Neighbor      V      AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
-                # 2001:DB8::3
-                #               4   65003       0       0        1    0    0 never    Idle (Admin)
-                {'regexp': re.compile(r'^\s+\d+\s+(?P<remote_as>{})(\s+\S+){{5}}\s+'
-                                      r'(?P<uptime>(never)|\d+\S+)\s+(?P<state>\D.*)'.format(
-                                            ASN_REGEX
-                                      )),
-                 'record': True}
-            ],
-            'no_fill_fields': ['accepted_prefixes', 'state']
-        }
+        match = re.search(r"BGP router identifier\s+(?P<router_id>.*), local", bgp_summary)
+        router_id = match.group('router_id')
+        router_id = napalm_base.helpers.ip(router_id)
 
-        parse_neighbors = {
-            'patterns': [
-                # Capture remote_addr and remote_as, e.g.:
-                # BGP neighbor is 10.0.0.2,  remote AS 65000, internal link
-                {'regexp': re.compile(r'^BGP neighbor is (?P<remote_addr>({})|({})),'
-                                      r'\s+remote AS (?P<remote_as>{}).*'.format(
-                                            IPV4_ADDR_REGEX, IPV6_ADDR_REGEX, ASN_REGEX
-                                      )),
-                 'record': False},
-                # Description: internal-2
-                {'regexp': re.compile(r'^\s+Description: (?P<description>.+)'),
-                 'record': False},
-                # Capture remote_id, e.g.:
-                # BGP version 4, remote router ID 10.0.1.2
-                {'regexp': re.compile(r'^\s+BGP version \d+, remote router ID '
-                                      r'(?P<remote_id>{})'.format(IPV4_ADDR_REGEX)),
-                 'record': False},
-                # Capture AFI and SAFI names, e.g.:
-                # For address family: IPv4 Unicast
-                {'regexp': re.compile(r'^\s+For address family: (?P<afi>\S+) (?P<safi>\S+)'),
-                 'record': False},
-                # Capture current sent and accepted prefixes, e.g.:
-                #     Prefixes Current:          637213       3142 (Consumes 377040 bytes)
-                {'regexp': re.compile(r'^\s+Prefixes Current:\s+(?P<sent_prefixes>\d+)\s+'
-                                      r'(?P<accepted_prefixes>\d+).*'),
-                 'record': False},
-                # Capture received_prefixes if soft-reconfig is enabled for the peer
-                {'regexp': re.compile(r'^\s+Saved (soft-reconfig):.+(?P<received_prefixes>\d+).*'),
-                 'record': True},
-                # Otherwise, use the following as an end of row marker
-                {'regexp': re.compile(r'^\s+Local Policy Denied Prefixes:.+'),
-                 'record': True}
-            ],
-            # fields that should not be "filled down" across table rows
-            'no_fill_fields': ['received_prefixes']
-        }
+        # Separate IPv4 and IPv6 information
+        bgp_summary_split = re.split(r'For address family:\s+', bgp_summary)
+        bgp_summary_ipv4, bgp_summary_ipv6 = ("", "")
+        for bgp_summary_section in bgp_summary_split:
+            # Skip if only whitespace
+            if not bgp_summary_section.strip():
+                continue
+            elif re.search(r"^IPv4", bgp_summary_section):
+                bgp_summary_ipv4 = bgp_summary_section
+            elif re.search(r"^IPv6", bgp_summary_section):
+                bgp_summary_ipv6 = bgp_summary_section
+            else:
+                raise ValueError("Unexpected data in BGP summary: {}".format(bgp_summary_section))
 
-        # parse outputs into a list of dicts
-        summary_data = []
-        summary_data_entry = {}
+        # Normalize data (i.e. get rid of wrapping output across multiple lines)
+        # Neighbor        V           AS MsgRcvd MsgSent   TblVer  InQ OutQ Up/Down  State/PfxRcd
+        # 2001:DB8::4
+        #                 4        65004 9900690  612449 155362939    0    0 26w6d       36391
+        neighbor_table = re.split(r"^Neighbor\s+.*State.PfxRcd", bgp_summary_ipv6, flags=re.M)[-1]
+        # Search for occurrences of IP Addr and only whitespace on a line
+        normalize_pattern = r"((?:{}|{})\s*\n.*)".format(IPV4_ADDR_REGEX, IPV6_ADDR_REGEX)
+        non_std_lines = re.findall(normalize_pattern, neighbor_table)
+        # Get rid of the extra newline
+        non_std_lines = [bgp_entry.replace("\n", "") for bgp_entry in non_std_lines]
 
-        for line in summary_output.splitlines():
-            # check for matches against each pattern
-            for item in parse_summary['patterns']:
-                match = item['regexp'].match(line)
-                if match:
-                    # a match was found, so update the temp entry with the match's groupdict
-                    summary_data_entry.update(match.groupdict())
-                    if item['record']:
-                        # 'record' indicates a row break in the logical table
-                        # so copy the temp entry into summary_data list
-                        summary_data.append(copy.deepcopy(summary_data_entry))
-                        # remove keys that are listed in no_fill_fields before the next pass
-                        for field in parse_summary['no_fill_fields']:
-                            try:
-                                del summary_data_entry[field]
-                            except KeyError:
-                                pass
-                    break
+        # Nornal lines (i.e. no newline after IP)
+        std_pattern = r"^((?:{}|{})[^\n]\s+\d.*)$".format(IPV4_ADDR_REGEX, IPV6_ADDR_REGEX)
+        std_lines = re.findall(std_pattern, neighbor_table, flags=re.M)
 
-        neighbor_data = []
-        neighbor_data_entry = {}
-        for line in neighbor_output.splitlines():
-            # check for matches against each pattern
-            for item in parse_neighbors['patterns']:
-                match = item['regexp'].match(line)
-                if match:
-                    # a match was found, so update the temp entry with the match's groupdict
-                    neighbor_data_entry.update(match.groupdict())
-                    if item['record']:
-                        # 'record' indicates a row break in the logical table
-                        # so copy the temp entry into summary_data list
-                        neighbor_data.append(copy.deepcopy(neighbor_data_entry))
-                        # remove keys that are listed in no_fill_fields before the next pass
-                        for field in parse_neighbors['no_fill_fields']:
-                            try:
-                                del neighbor_data_entry[field]
-                            except KeyError:
-                                pass
-                    break
-        router_id = None
+        # Reconstruct normalized neighbor table
+        neighbor_table = std_lines + non_std_lines
+        bgp_neighbor_pattern = re.compile(r'^\*?(?P<remote_addr>({})|({}))'
+                                          r'\s+\d+\s+(?P<remote_as>{})(\s+\S+){{5}}\s+'
+                                          r'(?P<uptime>(never)|\d+\S+)'
+                                          r'\s+(?P<accepted_prefixes>\d+)'.format(
+                                             IPV4_ADDR_REGEX, IPV6_ADDR_REGEX, ASN_REGEX))
 
-        # sanity check the summary_data
-        # first, check that we got a list of dicts
-        assert summary_data and isinstance(summary_data, list),\
-            "expected a list, got %s" % summary_data
-        for entry in summary_data:
-            assert isinstance(entry, dict), "expected a dict, got %s" % entry
-            # select the first router_id value
-            if not router_id:
-                router_id = entry['router_id']
-            elif entry['router_id'] != router_id:
-                # check that every other value matches
-                raise ValueError
-        # sanity check the neighbor_data
-        # check that we got a list of dicts
-        assert neighbor_data and isinstance(neighbor_data, list),\
-            "expected a list, got %s" % neighbor_data
-        for entry in neighbor_data:
-            assert isinstance(entry, dict), "expected a dict, got %s" % entry
-        # check the router_id looks like an ipv4 address
-        router_id = _ip_valid(router_id, version=4)
-        # add parsed data to output dict
+        bgp_neighbors = []
+        for entry in neighbor_table:
+            match = re.search(bgp_neighbor_pattern, entry)
+            if match:
+                bgp_neighbors.append(match.groupdict())
+# {'uptime': '8w0d', 'accepted_prefixes': '148', 'remote_as': '65000', 'remote_addr': '10.0.0.2'}
+
+        from pprint import pprint
+        print("-X" * 80)
+        print(bgp_neighbors)
+        print("-X" * 80)
+
         bgp_neighbor_data['global']['router_id'] = router_id
         bgp_neighbor_data['global']['peers'] = {}
-        for entry in summary_data:
-            remote_addr = _ip_valid(entry['remote_addr'])
-            # want lower case afi
-            afi = entry['afi'].lower()
-            # check that we're looking at a supported afi
-            if afi not in supported_afi:
-                continue
-            # get neighbor_entry out of neighbor data
-            neighbor_entry = None
-            for neighbor in neighbor_data:
-                if (neighbor['afi'].lower() == afi) and \
-                        (_ip_valid(neighbor['remote_addr']) == remote_addr):
-                    neighbor_entry = neighbor
-                    break
-            if not isinstance(neighbor_entry, dict):
-                raise ValueError(msg="Couldn't find neighbor data for %s in afi %s" %
-                                     (remote_addr, afi))
-            # check for admin down state
-            try:
-                if "(Admin)" in entry['state']:
-                    is_enabled = False
-                else:
-                    is_enabled = True
-            except KeyError:
-                is_enabled = True
-            # check whether session is up for address family and get prefix count
-            try:
-                accepted_prefixes = int(entry['accepted_prefixes'])
-                is_up = True
-            except (ValueError, KeyError):
-                accepted_prefixes = 0
-                is_up = False
-            # overide accepted_prefixes with neighbor data if possible (since that's newer)
-            try:
-                accepted_prefixes = int(neighbor_entry['accepted_prefixes'])
-            except (ValueError, KeyError):
-                pass
-            # try to get received prefix count, otherwise set to accepted_prefixes
-            received_prefixes = neighbor_entry.get('received_prefixes', accepted_prefixes)
-            # try to get sent prefix count and convert to int, otherwise set to -1
-            sent_prefixes = int(neighbor_entry.get('sent_prefixes', -1))
-            # parse uptime value
-            uptime = self.bgp_time_conversion(entry['uptime'])
-            # get description
-            try:
-                description = py23_compat.text_type(neighbor_entry['description'])
-            except KeyError:
-                description = ''
-            # check the remote router_id looks like an ipv4 address
-            remote_id = _ip_valid(neighbor_entry['remote_id'], version=4)
-            # start adding data
-            if remote_addr not in bgp_neighbor_data['global']['peers']:
-                # first record for remote_addr
-                # add directly into the results dict
-                bgp_neighbor_data['global']['peers'][remote_addr] = {
-                    'local_as': int(entry['local_as']),
-                    'remote_as': int(entry['remote_as']),
-                    'remote_id': remote_id,
-                    'is_up': is_up,
-                    'is_enabled': is_enabled,
-                    'description': description,
-                    'uptime': uptime,
-                    'address_family': {
-                        afi: {
-                            'received_prefixes': received_prefixes,
-                            'accepted_prefixes': accepted_prefixes,
-                            'sent_prefixes': sent_prefixes
-                        }
-                    }
-                }
-            else:
-                # found previous data for matching remote_addr
-                existing = bgp_neighbor_data['global']['peers'][remote_addr]
-                # compare with existing values and croak if they don't match
-                assert existing['local_as'] == int(entry['local_as'])
-                assert existing['remote_as'] == int(entry['remote_as'])
-                assert existing['remote_id'] == remote_id
-                assert existing['is_enabled'] == is_enabled
-                assert existing['description'] == description
-                # merge other values in a sane manner
-                existing['is_up'] = existing['is_up'] or is_up
-                existing['uptime'] = max(existing['uptime'], uptime)
-                # check that we don't have duplicate afi before adding stats
-                assert afi not in existing['address_family']
-                existing['address_family'][afi] = {
-                    'received_prefixes': received_prefixes,
-                    'accepted_prefixes': accepted_prefixes,
-                    'sent_prefixes': sent_prefixes
-                }
+        for bgp_peer in bgp_neighbors:
+
+
         return bgp_neighbor_data
+# """
+# {
+#   "global": {
+#     "router_id": "10.0.1.1",
+#     "peers": {
+#       "10.0.0.2": {
+#         "is_enabled": true,
+#         "uptime": 4838400,
+#         "remote_as": 65000,
+#         "description": "internal-2",
+#         "remote_id": "10.0.1.2",
+#         "local_as": 65000,
+#         "is_up": true,
+#         "address_family": {
+#           "ipv4": {
+#             "sent_prefixes": 637213,
+#             "accepted_prefixes": 3142,
+#             "received_prefixes": 3142
+#           },
+#           "ipv6": {
+#             "sent_prefixes": 36714,
+#             "accepted_prefixes": 148,
+#             "received_prefixes": 148
+#           }
+#         }
+#       },
+#    }
+#   }
+# }
+# """
 
     def get_interfaces_counters(self):
         """
